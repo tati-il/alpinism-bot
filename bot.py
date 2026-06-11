@@ -10,102 +10,59 @@ CHAT_ID = os.environ.get("CHAT_ID")
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
 
 KEYWORDS = [
-    # иврит - профессионалы и организации
-    "ועד בית עבודות גובה",
-    "נציגות הבית איטום",
-    "חברת ניהול שיקום חזית",
-    "חברת אחזקה עבודות בגובה",
-    "מנהל אחזקה סנפלינג",
-    "קבלן שיפוצים עבודות גובה",
-    "רטיבות בבניין",
-    "נזילה בחזית",
-    "חדירת מים לדירה",
-    "סדקים בבניין",
-    "טיח מתקלף",
-    "בטון מתפורר",
-    "שיקום חזית בניין",
-    "איטום סדקים",
-    "איטום קירות חיצוני",
-    "שיקום בטון",
     "עבודות בגובה",
-    "עבודות סנפלינג",
-    "ניקוי חזית בניין",
-    "שטיפת חלונות גובה",
-    "צביעת בניין גובה",
-    "שיקום מבנים",
-    "איטום מבנים",
-    "תחזוקת מבנים",
-    # иврит - города
-    "עבודות גובה תל אביב",
-    "איטום ראשון לציון",
-    "שיקום חזית רמת גן",
-    "עבודות בגובה נתניה",
-    "איטום אשדוד",
-    "סנפלינג פתח תקווה",
-    "עבודות גובה חולון",
-    "שיקום חזית בת ים",
-    # русский - проблемы
-    "протечка крыши Израиль",
-    "протекает стена квартира",
-    "мокрая стена сырость",
-    "плесень на стене",
-    "трещина в стене дома",
-    "трещины на фасаде",
-    "отваливается штукатурка",
-    "разрушение фасада",
-    "гидроизоляция фасада",
-    "герметизация швов",
-    "межпанельные швы ремонт",
-    "течет балкон",
-    "вода попадает в квартиру",
-    # русский - работы
+    "תיקון גג",
     "промышленный альпинизм Израиль",
-    "высотные работы Израиль",
-    "мойка окон высотных зданий",
-    "мойка фасада здания",
-    "покраска фасада высота",
-    "реставрация фасада",
-    "ремонт бетона фасад",
-    "ремонт крыши высотный",
-    # русский - организации
-    "домовой комитет ремонт фасада",
-    "управляющая компания высотные работы",
-    "председатель дома ремонт",
-    "строительная компания фасад",
-    "технический надзор фасад",
-    "девелопер ремонт здания",
+    "протечка крыши Израиль",
 ]
 
 def send_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        r = requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+        print(f"Telegram response: {r.status_code} - {r.text}")
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 def main():
-    send_message("🔍 Начинаю ежедневный поиск клиентов...")
+    # Проверка переменных
+    print(f"BOT_TOKEN exists: {bool(BOT_TOKEN)}")
+    print(f"CHAT_ID: {CHAT_ID}")
+    print(f"SERPAPI_KEY exists: {bool(SERPAPI_KEY)}")
+
+    send_message("🔧 ДЕБАГ: Бот запущен")
+    send_message(f"🔧 CHAT_ID: {CHAT_ID}")
+    send_message(f"🔧 SERPAPI_KEY есть: {bool(SERPAPI_KEY)}")
+
     results = []
 
     for keyword in KEYWORDS:
         try:
+            send_message(f"🔍 Ищу: {keyword}")
             params = {
                 "q": keyword,
                 "api_key": SERPAPI_KEY,
                 "num": 2,
-                "hl": "ru",
                 "gl": "il",
             }
             search = GoogleSearch(params)
             data = search.get_dict()
-            for r in data.get("organic_results", []):
-                results.append(f"🔎 {keyword}\n📌 {r.get('title')}\n🔗 {r.get('link')}")
-        except Exception as e:
-            logging.error(f"Error: {e}")
 
-    if results:
-        send_message(f"✅ Найдено: {len(results)} результатов")
-        for result in results[:20]:
-            send_message(result)
-    else:
-        send_message("❌ Ничего не найдено сегодня.")
+            # Дебаг ответа
+            print(f"Keys in response: {list(data.keys())}")
+            organic = data.get("organic_results", [])
+            send_message(f"🔧 Найдено для '{keyword}': {len(organic)} результатов")
+
+            for r in organic:
+                results.append(f"🔎 {keyword}\n📌 {r.get('title')}\n🔗 {r.get('link')}")
+
+        except Exception as e:
+            send_message(f"❌ Ошибка для '{keyword}': {str(e)}")
+            print(f"Error: {e}")
+
+    send_message(f"✅ Итого найдено: {len(results)}")
+    for result in results:
+        send_message(result)
 
 if __name__ == "__main__":
     main()
