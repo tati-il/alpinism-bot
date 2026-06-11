@@ -1,42 +1,27 @@
 import os
 import logging
 import requests
-from duckduckgo_search import DDGS
+from googlesearch import search
 
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-KEYWORDS_RU = [
+KEYWORDS = [
     "промышленный альпинизм Израиль",
     "промышленный альпинист",
-    "работа на верёвках",
     "работы на высоте",
     "течёт крыша",
-    "герметизация швов",
     "герметизация крыши",
-    "ремонт фасада",
+    "ремонт фасада высота",
     "мойка окон снаружи",
-    "монтаж на высоте",
-    "демонтаж на высоте",
-    "высотные работы",
-]
-
-KEYWORDS_HE = [
     "עבודות בגובה",
-    "פועל גובה",
-    "ניקוי חלונות",
     "תיקון גג",
     "גג דולף",
     "איטום גג",
     "תיקון חזית",
-    "עבודות חבלים",
-    "התקנה בגובה",
-    "צביעת חזית",
-    "ניקוי גג",
-    "אלפיניזם תעשייתי",
-    "תחזוקה בגובה",
+    "ניקוי חלונות גובה",
 ]
 
 def send_message(text):
@@ -46,18 +31,16 @@ def send_message(text):
 def main():
     send_message("🔍 Начинаю ежедневный поиск клиентов...")
     results = []
-    all_keywords = KEYWORDS_RU + KEYWORDS_HE
 
-    with DDGS() as ddgs:
-        for keyword in all_keywords:
-            try:
-                for r in ddgs.text(keyword, max_results=2):
-                    results.append(f"🔎 {keyword}\n📌 {r['title']}\n🔗 {r['href']}")
-            except Exception as e:
-                logging.error(f"Error: {e}")
+    for keyword in KEYWORDS:
+        try:
+            for url in search(keyword, num_results=2, lang="ru"):
+                results.append(f"🔎 {keyword}\n🔗 {url}")
+        except Exception as e:
+            logging.error(f"Error: {e}")
 
     if results:
-        send_message(f"✅ Найдено результатов: {len(results)}")
+        send_message(f"✅ Найдено: {len(results)} результатов")
         for result in results[:15]:
             send_message(result)
     else:
