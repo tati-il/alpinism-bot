@@ -1,7 +1,11 @@
 import os
+import csv
 import logging
 import requests
+import re
+from datetime import date
 from serpapi import GoogleSearch
+from io import StringIO
 
 logging.basicConfig(level=logging.INFO)
 
@@ -10,22 +14,19 @@ CHAT_ID = os.environ.get("CHAT_ID")
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
 
 # ============================================================
-# МОДУЛЬ А — База управляющих компаний
+# МОДУЛЬ А — Сбор базы управляющих компаний
 # ============================================================
 
 COMPANY_KEYWORDS = [
-    # иврит
     "חברת ניהול בניינים",
     "חברת אחזקה בניינים",
-    "אחזקת מבנים",
+    "אחזקת מבנים ישראל",
     "ניהול ועד בית",
     "מנהל אחזקה",
     "ניהול מבנים",
-    # английский
     "Facility Management Israel",
     "Property Management Israel",
     "Building Management Israel",
-    # города
     "חברת ניהול תל אביב",
     "חברת ניהול ירושלים",
     "חברת ניהול חיפה",
@@ -36,6 +37,31 @@ COMPANY_KEYWORDS = [
     "חברת ניהול רמת גן",
     "חברת ניהול באר שבע",
 ]
+
+# Домены которые нужно пропустить
+SKIP_DOMAINS = [
+    "b144", "d30", "yellow", "jobmaster", "wikipedia",
+    "ynet", "calcalist", "haaretz", "maariv", "walla",
+    "midrag", "pro.co.il", "easy.co.il", "dapei",
+    "google.com/maps", "facebook.com", "instagram.com",
+]
+
+def extract_phone(text):
+    phones = re.findall(r'0\d[\d\-]{7,10}', text)
+    return phones[0] if phones else ""
+
+def extract_email(text):
+    emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+    return emails[0] if emails else ""
+
+def extract_city(text, title):
+    cities = ["תל אביב", "ירושלים", "חיפה", "ראשון לציון",
+              "נתניה", "אשדוד", "פתח תקווה", "רמת גן", "באר שבע",
+              "חולון", "בת ים", "בני ברק", "רחובות", "אשקלון"]
+    for city in cities:
+        if city in text or city in title:
+            return city
+    return ""
 
 def search_companies():
     companies = []
@@ -62,191 +88,52 @@ def search_companies():
                     continue
                 seen.add(link)
 
-                # Пропускаем каталоги и агрегаторы
-                skip = ["b144", "d30", "koneс", "yellow", "jobmaster", "wikipedia"]
-                if any(s in link.lower() for s in skip):
+                # Пропускаем каталоги и новостные сайты
+                if any(s in link.lower() for s in SKIP_DOMAINS):
                     continue
 
-                # Извлекаем телефон из сниппета
-                phone = ""
-                import re
-                phones = re.findall(r'0\d[\d\-]{7,10}', snippet)
-                if phones:
-                    phone = phones[0]
+                phone = extract_phone(snippet + " " + title)
+                email = extract_email(snippet + " " + title)
+                city = extract_city(snippet, title)
 
                 companies.append({
-                    "name": title,
-                    "phone": phone,
-                    "site": link,
-                    "snippet": snippet[:100],
-                    "keyword": keyword,
+                    "Название": title,
+                    "Телефон": phone,
+                    "Email": email,
+                    "Сайт": link,
+                    "Город": city,
+                    "Источник": keyword,
+                    "Дата": str(date.today()),
                 })
 
         except Exception as e:
-            print(f"Company search error: {e}")
+            print(f"Company error '{keyword}': {e}")
 
     return companies
 
-def send_companies_report(companies):
+def send_companies_csv(companies):
     if not companies:
         send_message("🏢 Модуль А: Новых компаний не найдено.")
         return
 
-    send_message(f"🏢 МОДУЛЬ А — Управляющие компании\nНайдено: {len(companies)}")
+    # Создаём CSV в памяти
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=[
+        "Название", "Телефон", "Email", "Сайт", "Город", "Источник", "Дата"
+    ])
+    writer.writeheader()
+    writer.writerows(companies)
+    csv_content = output.getvalue()
 
-    for i, c in enumerate(companies[:15], 1):
-        msg = (
-            f"🏢 {i}. {c['name']}\n"
-            f"📞 {c['phone'] or 'не найден'}\n"
-            f"🌐 {c['site']}\n"
-            f"📝 {c['snippet']}\n"
-            f"🔎 Запрос: {c['keyword']}"
-        )
-        send_message(msg)
-
-# ============================================================
-# МОДУЛЬ Б — Горячие лиды
-# ============================================================
-
-LEAD_KEYWORDS = [
-    # Telegram
-    'site:t.me "רטיבות"',
-    'site:t.me "נזילה"',
-    'site:t.me "ועד בית" "שיקום"',
-    'site:t.me "גג דולף"',
-    'site:t.me "מחפש קבלן"',
-    'site:t.me "протечка"',
-    'site:t.me "домовой комитет"',
-
-    # Форумы
-    'site:rotter.net "רטיבות" "מחפש"',
-    'site:rotter.net "שיקום חזית"',
-    'site:stips.co.il "רטיבות"',
-    'site:stips.co.il "שיקום חזית"',
-
-    # Иврит — проблемы + намерение
-    '"ועד בית" "מחפש קבלן"',
-    '"ועד בית" "הצעת מחיר" שיקום',
-    '"נציגות הבית" "הצעת מחיר"',
-    '"רטיבות בבניין" "מחפש"',
-    '"נזילה בקיר" "המלצה"',
-    '"גג דולף" "מחפש קבלן"',
-    '"סדקים בחזית" "תיקון"',
-    '"חדירת מים" "פתרון"',
-    '"מכרז שיקום חזית"',
-    '"מכרז איטום"',
-    '"הצעת מחיר שיקום"',
-    '"מי מכיר קבלן" איטום',
-    '"המלצה על קבלן" שיקום',
-
-    # Русский — проблемы + намерение
-    '"домовой комитет" "ищем подрядчика"',
-    '"домовой комитет" "ремонт фасада"',
-    '"протекает стена" "что делать"',
-    '"трещины на фасаде" "ищу"',
-    '"нужна герметизация швов"',
-    '"посоветуйте подрядчика" фасад',
-    '"ищем промышленного альпиниста"',
-    '"сырость в квартире" Израиль',
-]
-
-# Система оценки
-HIGH_VALUE = [
-    ("ועד בית", 10), ("נציגות הבית", 10),
-    ("חברת ניהול", 10), ("חברת אחזקה", 10),
-    ("מנהל אחזקה", 10), ("מפקח בנייה", 10),
-    ("מכרז", 10), ("домовой комитет", 10),
-    ("управляющая компания", 10),
-]
-INTENT_WORDS = [
-    ("מחפש", 5), ("צריך", 5), ("המלצה", 5),
-    ("הצעת מחיר", 5), ("מי מכיר", 5),
-    ("ищу", 5), ("нужен", 5), ("нужна", 5),
-    ("посоветуйте", 5), ("ищем", 5),
-]
-PROBLEM_WORDS = [
-    ("רטיבות", 3), ("נזילה", 3), ("סדקים", 3),
-    ("גג דולף", 3), ("חדירת מים", 3),
-    ("протечка", 3), ("сырость", 3), ("трещин", 3),
-    ("שיקום", 2), ("איטום", 2), ("фасад", 2),
-]
-
-BLACKLIST_DOMAINS = [
-    "b144.co.il", "d30.co.il", "yellow.co.il",
-    "jobmaster", "wikipedia", "ynet.co.il",
-]
-BLACKLIST_WORDS = [
-    "קטלוג שירותים", "רשימת קבלנים",
-    "advertisement", "sponsored",
-]
-
-def score_lead(title, snippet, link):
-    text = (title + " " + (snippet or "") + " " + link).lower()
-    for domain in BLACKLIST_DOMAINS:
-        if domain in link.lower():
-            return 0
-    for word in BLACKLIST_WORDS:
-        if word.lower() in text:
-            return 0
-    score = 0
-    for word, pts in HIGH_VALUE:
-        if word.lower() in text: score += pts
-    for word, pts in INTENT_WORDS:
-        if word.lower() in text: score += pts
-    for word, pts in PROBLEM_WORDS:
-        if word.lower() in text: score += pts
-    return score
-
-def search_leads():
-    leads = []
-    seen = set()
-
-    for keyword in LEAD_KEYWORDS:
-        try:
-            params = {
-                "q": keyword,
-                "api_key": SERPAPI_KEY,
-                "num": 3,
-                "gl": "il",
-            }
-            search = GoogleSearch(params)
-            data = search.get_dict()
-
-            for r in data.get("organic_results", []):
-                title = r.get("title", "")
-                link = r.get("link", "")
-                snippet = r.get("snippet", "")
-
-                if link in seen:
-                    continue
-                seen.add(link)
-
-                score = score_lead(title, snippet, link)
-                if score >= 5:
-                    leads.append((score, title, link, snippet[:120]))
-
-        except Exception as e:
-            print(f"Lead search error: {e}")
-
-    leads.sort(key=lambda x: x[0], reverse=True)
-    return leads
-
-def send_leads_report(leads):
-    if not leads:
-        send_message("🔥 Модуль Б: Горячих лидов не найдено.")
-        return
-
-    send_message(f"🔥 МОДУЛЬ Б — Горячие лиды\nНайдено: {len(leads)}")
-
-    for score, title, link, snippet in leads[:15]:
-        stars = "⭐" * min(int(score / 5), 5)
-        msg = (
-            f"{stars} Рейтинг: {score}\n"
-            f"📌 {title}\n"
-            f"💬 {snippet}\n"
-            f"🔗 {link}"
-        )
-        send_message(msg)
+    # Отправляем файл в Telegram
+    filename = f"companies_{date.today()}.csv"
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    files = {"document": (filename, csv_content.encode("utf-8-sig"), "text/csv")}
+    data = {
+        "chat_id": CHAT_ID,
+        "caption": f"🏢 МОДУЛЬ А — Управляющие компании\n📊 Найдено новых: {len(companies)}\n📅 Дата: {date.today()}"
+    }
+    requests.post(url, data=data, files=files)
 
 # ============================================================
 # ГЛАВНАЯ ФУНКЦИЯ
@@ -260,17 +147,12 @@ def send_message(text):
         print(f"Telegram error: {e}")
 
 def main():
-    send_message("🚀 Запускаю ежедневный поиск...")
+    send_message("🚀 Запускаю сбор базы управляющих компаний...")
 
-    # Модуль А — управляющие компании
     companies = search_companies()
-    send_companies_report(companies)
+    send_companies_csv(companies)
 
-    # Модуль Б — горячие лиды
-    leads = search_leads()
-    send_leads_report(leads)
-
-    send_message("✅ Поиск завершён!")
+    send_message("✅ Готово! Проверь файл выше.")
 
 if __name__ == "__main__":
     main()
