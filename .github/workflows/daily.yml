@@ -18,3 +18,4 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: '2015264352'
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
