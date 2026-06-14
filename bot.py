@@ -14,7 +14,6 @@ CHAT_ID = os.environ.get("CHAT_ID")
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
 
 COMPANY_KEYWORDS = [
-    # עברית
     "חברת ניהול בניינים",
     "חברת אחזקה בניינים",
     "אחזקת מבנים ישראל",
@@ -34,13 +33,11 @@ COMPANY_KEYWORDS = [
     "חברת ניהול בת ים",
     "חברת ניהול הרצליה",
     "חברת ניהול רחובות",
-    # רוסית
     "управляющая компания Израиль",
     "обслуживание зданий Израиль",
     "управление недвижимостью Израиль",
 ]
 
-# Домены которые нужно пропустить
 SKIP_DOMAINS = [
     "b144", "d30", "yellow", "jobmaster", "wikipedia",
     "ynet", "calcalist", "haaretz", "maariv", "walla",
@@ -50,29 +47,85 @@ SKIP_DOMAINS = [
     "stips", "rotter", "tapuz",
 ]
 
-# Израильские домены
 ISRAEL_DOMAINS = [".co.il", ".org.il", ".net.il", ".ac.il", ".gov.il"]
 
 ARTICLE_TITLE_WORDS = [
     "רשימה", "המלצות", "מחירים", "מחיר", "כמה עולה",
     "השוואה", "איך לבחור", "מדריך", "טיפים", "כתבה",
     "פורטל", "מאמר", "ויקי",
-    "лучшие", "топ", "рейтинг",
+    "לучшие", "топ", "рейтинг",
     "דרושים", "משרות", "דרוש", "דרושה",
     "вакансии", "требуется",
+    # исправление 2 — курсы
+    "קורס", "קורסים", "הכשרה", "לימודים", "סמינר",
+    "курс", "обучение", "семинар",
 ]
 
 ARTICLE_URL_SIGNS = [
     "/blog/", "/news/", "/article/", "/post/",
     "/category/", "/tag/", "?p=", "wiki",
     "/jobs/", "/career/", "/משרות/", "/דרושים/",
+    "/קורס/", "/course/", "/courses/",
 ]
+
+# Исправление 3 — список валидных доменов email в Израиле
+VALID_EMAIL_DOMAINS = [
+    # международные
+    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
+    "icloud.com", "me.com", "mac.com", "protonmail.com",
+    "live.com", "msn.com", "aol.com",
+    # израильские
+    "walla.co.il", "walla.com", "bezeqint.net", "bezeq.net",
+    "barak.net.il", "netvision.net.il", "internet.il",
+    "zahav.net.il", "012.net.il", "013.net", "014.net",
+    "017.net.il", "019.net.il",
+    "hot.net.il", "hotmail.co.il",
+    "nana.co.il", "nana10.co.il",
+    "smile.net.il", "inter.net.il",
+    "013.co.il", "bezeqint.co.il",
+    # корпоративные израильские домены
+    "co.il", "org.il", "net.il", "ac.il", "gov.il",
+]
+
+def is_valid_email(email):
+    """Проверяем что email настоящий"""
+    email = email.lower().strip()
+
+    # Базовая проверка формата
+    if not re.match(r'^[\w\.\-]+@[\w\.\-]+\.\w{2,}$', email):
+        return False
+
+    # Пропускаем мусорные адреса
+    skip = [
+        "example", "test", "spam", "noreply", "no-reply",
+        "sentry", "wix", "wordpress", "schema", "schemata",
+        "support@sentry", "email@email",
+    ]
+    if any(s in email for s in skip):
+        return False
+
+    # Проверяем что домен валидный
+    domain = email.split("@")[1]
+
+    # Проверяем по списку валидных доменов
+    for valid in VALID_EMAIL_DOMAINS:
+        if domain == valid or domain.endswith("." + valid) or domain.endswith(valid):
+            return True
+
+    # Если домен заканчивается на .co.il, .org.il и т.д. — валидный
+    if re.match(r'.+\.(co\.il|org\.il|net\.il|ac\.il|gov\.il|com|net|org)$', domain):
+        return True
+
+    # Если после @ идут цифры — мусор
+    if re.match(r'^\d', domain):
+        return False
+
+    return False
 
 def is_real_company(title, link):
     title_lower = title.lower()
     link_lower = link.lower()
 
-    # Только израильские домены
     if not any(d in link_lower for d in ISRAEL_DOMAINS):
         return False
 
@@ -92,10 +145,9 @@ def extract_phone(text):
     return phones[0].replace("-", "") if phones else ""
 
 def extract_email(text):
-    emails = re.findall(r'[\w\.\-]+@[\w\.\-]+\.\w{2,4}', text)
-    skip = ["example", "test", "spam", "noreply", "no-reply", "sentry", "wix", "wordpress"]
+    emails = re.findall(r'[\w\.\-]+@[\w\.\-]+\.\w{2,}', text)
     for email in emails:
-        if not any(s in email.lower() for s in skip):
+        if is_valid_email(email):
             return email
     return ""
 
@@ -130,10 +182,9 @@ def scrape_contact_page(base_url):
                 if found:
                     phone = found[0].replace("-", "")
             if not email:
-                found = re.findall(r'[\w\.\-]+@[\w\.\-]+\.\w{2,4}', text)
-                skip = ["example", "test", "spam", "noreply", "sentry", "wix", "wordpress"]
+                found = re.findall(r'[\w\.\-]+@[\w\.\-]+\.\w{2,}', text)
                 for e in found:
-                    if not any(s in e.lower() for s in skip):
+                    if is_valid_email(e):
                         email = e
                         break
             if phone and email:
@@ -182,6 +233,10 @@ def search_companies():
                         phone = scraped_phone
                     if not email:
                         email = scraped_email
+
+                # Исправление 1 — только с email
+                if not email:
+                    continue
 
                 if not city:
                     city = extract_city(title)
