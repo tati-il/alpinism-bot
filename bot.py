@@ -13,20 +13,14 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
 
-# ============================================================
-# МОДУЛЬ А — Сбор базы управляющих компаний
-# ============================================================
-
 COMPANY_KEYWORDS = [
+    # עברית
     "חברת ניהול בניינים",
     "חברת אחזקה בניינים",
     "אחזקת מבנים ישראל",
     "ניהול ועד בית",
     "מנהל אחזקה",
     "ניהול מבנים",
-    "Facility Management Israel",
-    "Property Management Israel",
-    "Building Management Israel",
     "חברת ניהול תל אביב",
     "חברת ניהול ירושלים",
     "חברת ניהול חיפה",
@@ -36,15 +30,62 @@ COMPANY_KEYWORDS = [
     "חברת ניהול פתח תקווה",
     "חברת ניהול רמת גן",
     "חברת ניהול באר שבע",
+    "חברת ניהול חולון",
+    "חברת ניהול בת ים",
+    "חברת ניהול הרצליה",
+    "חברת ניהול רחובות",
+    # רוסית
+    "управляющая компания Израиль",
+    "обслуживание зданий Израиль",
+    "управление недвижимостью Израиль",
 ]
 
+# Домены которые нужно пропустить
 SKIP_DOMAINS = [
     "b144", "d30", "yellow", "jobmaster", "wikipedia",
     "ynet", "calcalist", "haaretz", "maariv", "walla",
     "midrag", "pro.co.il", "easy.co.il", "dapei",
     "google.com", "facebook.com", "instagram.com",
-    "linkedin.com", "twitter.com",
+    "linkedin.com", "twitter.com", "youtube.com",
+    "stips", "rotter", "tapuz",
 ]
+
+# Израильские домены
+ISRAEL_DOMAINS = [".co.il", ".org.il", ".net.il", ".ac.il", ".gov.il"]
+
+ARTICLE_TITLE_WORDS = [
+    "רשימה", "המלצות", "מחירים", "מחיר", "כמה עולה",
+    "השוואה", "איך לבחור", "מדריך", "טיפים", "כתבה",
+    "פורטל", "מאמר", "ויקי",
+    "лучшие", "топ", "рейтинг",
+    "דרושים", "משרות", "דרוש", "דרושה",
+    "вакансии", "требуется",
+]
+
+ARTICLE_URL_SIGNS = [
+    "/blog/", "/news/", "/article/", "/post/",
+    "/category/", "/tag/", "?p=", "wiki",
+    "/jobs/", "/career/", "/משרות/", "/דרושים/",
+]
+
+def is_real_company(title, link):
+    title_lower = title.lower()
+    link_lower = link.lower()
+
+    # Только израильские домены
+    if not any(d in link_lower for d in ISRAEL_DOMAINS):
+        return False
+
+    if any(s in link_lower for s in SKIP_DOMAINS):
+        return False
+
+    if any(w in title_lower for w in ARTICLE_TITLE_WORDS):
+        return False
+
+    if any(s in link_lower for s in ARTICLE_URL_SIGNS):
+        return False
+
+    return True
 
 def extract_phone(text):
     phones = re.findall(r'0\d[\d\-]{7,10}', text)
@@ -52,8 +93,7 @@ def extract_phone(text):
 
 def extract_email(text):
     emails = re.findall(r'[\w\.\-]+@[\w\.\-]+\.\w{2,4}', text)
-    # фильтруем мусорные email
-    skip = ["example", "test", "spam", "noreply", "no-reply"]
+    skip = ["example", "test", "spam", "noreply", "no-reply", "sentry", "wix", "wordpress"]
     for email in emails:
         if not any(s in email.lower() for s in skip):
             return email
@@ -65,6 +105,7 @@ def extract_city(text):
         "נתניה", "אשדוד", "פתח תקווה", "רמת גן", "באר שבע",
         "חולון", "בת ים", "בני ברק", "רחובות", "אשקלון",
         "הרצליה", "כפר סבא", "רעננה", "מודיעין", "אילת",
+        "Тель-Авив", "Иерусалим", "Хайфа", "Нетания",
     ]
     for city in cities:
         if city in text:
@@ -72,47 +113,32 @@ def extract_city(text):
     return ""
 
 def scrape_contact_page(base_url):
-    """Этап 2 — заходим на сайт и ищем контакты"""
     phone = ""
     email = ""
-
-    # Пробуем страницы контактов
-    contact_paths = ["", "/contact", "/contacts", "/צור-קשר", "/about", "/about-us"]
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    contact_paths = ["", "/contact", "/contacts", "/צור-קשר", "/about", "/אודות"]
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
     for path in contact_paths:
         try:
             url = base_url.rstrip("/") + path
-            response = requests.get(url, headers=headers, timeout=8)
+            response = requests.get(url, headers=headers, timeout=7)
             if response.status_code != 200:
                 continue
-
             text = response.text
-
-            # Извлекаем телефон
             if not phone:
-                found_phones = re.findall(r'0\d[\d\-]{7,10}', text)
-                if found_phones:
-                    phone = found_phones[0].replace("-", "")
-
-            # Извлекаем email
+                found = re.findall(r'0\d[\d\-]{7,10}', text)
+                if found:
+                    phone = found[0].replace("-", "")
             if not email:
-                found_emails = re.findall(r'[\w\.\-]+@[\w\.\-]+\.\w{2,4}', text)
-                skip = ["example", "test", "spam", "noreply", "no-reply", "sentry", "wix"]
-                for e in found_emails:
+                found = re.findall(r'[\w\.\-]+@[\w\.\-]+\.\w{2,4}', text)
+                skip = ["example", "test", "spam", "noreply", "sentry", "wix", "wordpress"]
+                for e in found:
                     if not any(s in e.lower() for s in skip):
                         email = e
                         break
-
-            # Если нашли оба — достаточно
             if phone and email:
                 break
-
-        except Exception as e:
-            print(f"Scrape error {base_url}{path}: {e}")
+        except:
             continue
 
     return phone, email
@@ -129,6 +155,7 @@ def search_companies():
                 "num": 5,
                 "gl": "il",
                 "hl": "iw",
+                "lr": "lang_iw|lang_ru",
             }
             search = GoogleSearch(params)
             data = search.get_dict()
@@ -142,15 +169,13 @@ def search_companies():
                     continue
                 seen.add(link)
 
-                if any(s in link.lower() for s in SKIP_DOMAINS):
+                if not is_real_company(title, link):
                     continue
 
-                # Этап 1 — из сниппета
                 phone = extract_phone(snippet + " " + title)
                 email = extract_email(snippet + " " + title)
-                city = extract_city(snippet + " " + title)
+                city = extract_city(snippet + " " + title + " " + keyword)
 
-                # Этап 2 — заходим на сайт если не нашли контакты
                 if not phone or not email:
                     scraped_phone, scraped_email = scrape_contact_page(link)
                     if not phone:
@@ -158,7 +183,6 @@ def search_companies():
                     if not email:
                         email = scraped_email
 
-                # Город из сниппета или из текста сайта
                 if not city:
                     city = extract_city(title)
 
@@ -173,13 +197,13 @@ def search_companies():
                 })
 
         except Exception as e:
-            print(f"Company error '{keyword}': {e}")
+            print(f"Error '{keyword}': {e}")
 
     return companies
 
 def send_companies_csv(companies):
     if not companies:
-        send_message("🏢 Модуль А: Новых компаний не найдено.")
+        send_message("🏢 Новых компаний не найдено.")
         return
 
     output = StringIO()
@@ -196,18 +220,14 @@ def send_companies_csv(companies):
     data = {
         "chat_id": CHAT_ID,
         "caption": (
-            f"🏢 МОДУЛЬ А — Управляющие компании\n"
-            f"📊 Найдено: {len(companies)}\n"
+            f"🏢 Управляющие компании Израиля\n"
+            f"📊 Найдено компаний: {len(companies)}\n"
             f"📞 С телефоном: {sum(1 for c in companies if c['Телефон'])}\n"
             f"📧 С email: {sum(1 for c in companies if c['Email'])}\n"
-            f"📅 Дата: {date.today()}"
+            f"📅 {date.today()}"
         )
     }
     requests.post(url, data=data, files=files)
-
-# ============================================================
-# ГЛАВНАЯ ФУНКЦИЯ
-# ============================================================
 
 def send_message(text):
     try:
@@ -217,11 +237,9 @@ def send_message(text):
         print(f"Telegram error: {e}")
 
 def main():
-    send_message("🚀 Запускаю сбор базы...\n⏳ Займёт 3-5 минут (захожу на каждый сайт)")
-
+    send_message("🚀 Запускаю сбор базы...\n⏳ Займёт 3-5 минут")
     companies = search_companies()
     send_companies_csv(companies)
-
     send_message("✅ Готово! Открой файл в Excel.")
 
 if __name__ == "__main__":
