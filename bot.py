@@ -3,6 +3,7 @@ import csv
 import logging
 import requests
 import re
+import base64
 from datetime import date
 from serpapi import GoogleSearch
 from io import StringIO
@@ -12,6 +13,113 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_REPO = os.environ.get("GITHUB_REPO")
+
+# ============================================================
+# РАБОТА С ФАЙЛАМИ ЧЕРЕЗ GITHUB
+# ============================================================
+
+def get_github_files():
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"Error getting files: {e}")
+        return []
+
+def get_last_csv_file():
+    """Находим последний CSV файл с компаниями — любое имя"""
+    try:
+        files = get_github_files()
+        # Ищем все CSV файлы кроме requirements
+        csv_files = [
+            f for f in files
+            if f["name"].endswith(".csv") and "requirements" not in f["name"]
+        ]
+        if not csv_files:
+            return None, None
+
+        # Сортируем по дате последнего обновления и берём последний
+        csv_files.sort(key=lambda x: x.get("name", ""), reverse=True)
+        last_file = csv_files[0]
+
+        print(f"Found previous file: {last_file['name']}")
+
+        # Читаем содержимое файла
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        response = requests.get(last_file["download_url"], headers=headers)
+        if response.status_code == 200:
+            return last_file["name"], response.content.decode("utf-8-sig", errors="ignore")
+        return None, None
+
+    except Exception as e:
+        print(f"Error reading last CSV: {e}")
+        return None, None
+
+def load_previous_emails(csv_content):
+    """Извлекаем все email и сайты из предыдущего файла"""
+    known = set()
+    if not csv_content:
+        return known
+    try:
+        # Пробуем разные разделители
+        for delimiter in [",", ";"]:
+            try:
+                reader = csv.DictReader(StringIO(csv_content), delimiter=delimiter)
+                rows = list(reader)
+                if not rows:
+                    continue
+
+                for row in rows:
+                    # Ищем email в любой колонке
+                    for key, value in row.items():
+                        val = (value or "").strip().lower()
+                        if "@" in val and "." in val:
+                            known.add(val)
+                        # Ищем сайт
+                        if "http" in val:
+                            # Берём только домен
+                            domain = re.sub(r'https?://(www\.)?', '', val).split("/")[0]
+                            if domain:
+                                known.add(domain)
+                break
+            except:
+                continue
+
+    except Exception as e:
+        print(f"Error parsing CSV: {e}")
+    print(f"Loaded {len(known)} known entries from previous file")
+    return known
+
+def save_csv_to_github(filename, csv_content):
+    """Сохраняем новый CSV файл в GitHub"""
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        content = base64.b64encode(csv_content.encode("utf-8-sig")).decode("utf-8")
+        payload = {
+            "message": f"Add companies {date.today()}",
+            "content": content,
+        }
+        response = requests.put(url, headers=headers, json=payload)
+        if response.status_code in [200, 201]:
+            print(f"Saved {filename} to GitHub")
+        else:
+            print(f"Error saving: {response.status_code} {response.text}")
+    except Exception as e:
+        print(f"Error saving CSV: {e}")
+
+# ============================================================
+# КЛЮЧЕВЫЕ СЛОВА — только иврит
+# ============================================================
 
 COMPANY_KEYWORDS = [
     "חברת ניהול בניינים",
@@ -33,9 +141,10 @@ COMPANY_KEYWORDS = [
     "חברת ניהול בת ים",
     "חברת ניהול הרצליה",
     "חברת ניהול רחובות",
-    "управляющая компания Израиль",
-    "обслуживание зданий Израиль",
-    "управление недвижимостью Израиль",
+    "חברת ניהול מודיעין",
+    "חברת ניהול כפר סבא",
+    "חברת ניהול רעננה",
+    "חברת ניהול אילת",
 ]
 
 SKIP_DOMAINS = [
@@ -53,12 +162,8 @@ ARTICLE_TITLE_WORDS = [
     "רשימה", "המלצות", "מחירים", "מחיר", "כמה עולה",
     "השוואה", "איך לבחור", "מדריך", "טיפים", "כתבה",
     "פורטל", "מאמר", "ויקי",
-    "לучшие", "топ", "рейтинг",
     "דרושים", "משרות", "דרוש", "דרושה",
-    "вакансии", "требуется",
-    # исправление 2 — курсы
     "קורס", "קורסים", "הכשרה", "לימודים", "סמינר",
-    "курс", "обучение", "семинар",
 ]
 
 ARTICLE_URL_SIGNS = [
@@ -68,76 +173,45 @@ ARTICLE_URL_SIGNS = [
     "/קורס/", "/course/", "/courses/",
 ]
 
-# Исправление 3 — список валидных доменов email в Израиле
 VALID_EMAIL_DOMAINS = [
-    # международные
     "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
     "icloud.com", "me.com", "mac.com", "protonmail.com",
     "live.com", "msn.com", "aol.com",
-    # израильские
     "walla.co.il", "walla.com", "bezeqint.net", "bezeq.net",
-    "barak.net.il", "netvision.net.il", "internet.il",
-    "zahav.net.il", "012.net.il", "013.net", "014.net",
-    "017.net.il", "019.net.il",
-    "hot.net.il", "hotmail.co.il",
-    "nana.co.il", "nana10.co.il",
-    "smile.net.il", "inter.net.il",
-    "013.co.il", "bezeqint.co.il",
-    # корпоративные израильские домены
-    "co.il", "org.il", "net.il", "ac.il", "gov.il",
+    "barak.net.il", "netvision.net.il", "zahav.net.il",
+    "012.net.il", "013.net", "014.net", "017.net.il",
+    "hot.net.il", "nana.co.il", "smile.net.il",
 ]
 
 def is_valid_email(email):
-    """Проверяем что email настоящий"""
     email = email.lower().strip()
-
-    # Базовая проверка формата
     if not re.match(r'^[\w\.\-]+@[\w\.\-]+\.\w{2,}$', email):
         return False
-
-    # Пропускаем мусорные адреса
-    skip = [
-        "example", "test", "spam", "noreply", "no-reply",
-        "sentry", "wix", "wordpress", "schema", "schemata",
-        "support@sentry", "email@email",
-    ]
+    skip = ["example", "test", "spam", "noreply", "no-reply",
+            "sentry", "wix", "wordpress", "schema"]
     if any(s in email for s in skip):
         return False
-
-    # Проверяем что домен валидный
     domain = email.split("@")[1]
-
-    # Проверяем по списку валидных доменов
     for valid in VALID_EMAIL_DOMAINS:
-        if domain == valid or domain.endswith("." + valid) or domain.endswith(valid):
+        if domain == valid or domain.endswith("." + valid):
             return True
-
-    # Если домен заканчивается на .co.il, .org.il и т.д. — валидный
     if re.match(r'.+\.(co\.il|org\.il|net\.il|ac\.il|gov\.il|com|net|org)$', domain):
         return True
-
-    # Если после @ идут цифры — мусор
     if re.match(r'^\d', domain):
         return False
-
     return False
 
 def is_real_company(title, link):
     title_lower = title.lower()
     link_lower = link.lower()
-
     if not any(d in link_lower for d in ISRAEL_DOMAINS):
         return False
-
     if any(s in link_lower for s in SKIP_DOMAINS):
         return False
-
     if any(w in title_lower for w in ARTICLE_TITLE_WORDS):
         return False
-
     if any(s in link_lower for s in ARTICLE_URL_SIGNS):
         return False
-
     return True
 
 def extract_phone(text):
@@ -157,7 +231,6 @@ def extract_city(text):
         "נתניה", "אשדוד", "פתח תקווה", "רמת גן", "באר שבע",
         "חולון", "בת ים", "בני ברק", "רחובות", "אשקלון",
         "הרצליה", "כפר סבא", "רעננה", "מודיעין", "אילת",
-        "Тель-Авив", "Иерусалим", "Хайфа", "Нетания",
     ]
     for city in cities:
         if city in text:
@@ -169,7 +242,6 @@ def scrape_contact_page(base_url):
     email = ""
     contact_paths = ["", "/contact", "/contacts", "/צור-קשר", "/about", "/אודות"]
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
     for path in contact_paths:
         try:
             url = base_url.rstrip("/") + path
@@ -191,12 +263,11 @@ def scrape_contact_page(base_url):
                 break
         except:
             continue
-
     return phone, email
 
 def search_companies():
     companies = []
-    seen = set()
+    seen_links = set()
 
     for keyword in COMPANY_KEYWORDS:
         try:
@@ -206,7 +277,7 @@ def search_companies():
                 "num": 5,
                 "gl": "il",
                 "hl": "iw",
-                "lr": "lang_iw|lang_ru",
+                "lr": "lang_iw",
             }
             search = GoogleSearch(params)
             data = search.get_dict()
@@ -216,9 +287,9 @@ def search_companies():
                 link = r.get("link", "")
                 snippet = r.get("snippet", "")
 
-                if link in seen:
+                if link in seen_links:
                     continue
-                seen.add(link)
+                seen_links.add(link)
 
                 if not is_real_company(title, link):
                     continue
@@ -234,7 +305,6 @@ def search_companies():
                     if not email:
                         email = scraped_email
 
-                # Исправление 1 — только с email
                 if not email:
                     continue
 
@@ -256,9 +326,16 @@ def search_companies():
 
     return companies
 
+def send_message(text):
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+    except Exception as e:
+        print(f"Telegram error: {e}")
+
 def send_companies_csv(companies):
     if not companies:
-        send_message("🏢 Новых компаний не найдено.")
+        send_message("🏢 Новых компаний на этой неделе не найдено.")
         return
 
     output = StringIO()
@@ -270,13 +347,15 @@ def send_companies_csv(companies):
     csv_content = output.getvalue()
 
     filename = f"companies_{date.today()}.csv"
+    save_csv_to_github(filename, csv_content)
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     files = {"document": (filename, csv_content.encode("utf-8-sig"), "text/csv")}
     data = {
         "chat_id": CHAT_ID,
         "caption": (
-            f"🏢 Управляющие компании Израиля\n"
-            f"📊 Найдено компаний: {len(companies)}\n"
+            f"🆕 НОВЫЕ компании за эту неделю\n"
+            f"📊 Найдено новых: {len(companies)}\n"
             f"📞 С телефоном: {sum(1 for c in companies if c['Телефон'])}\n"
             f"📧 С email: {sum(1 for c in companies if c['Email'])}\n"
             f"📅 {date.today()}"
@@ -284,18 +363,38 @@ def send_companies_csv(companies):
     }
     requests.post(url, data=data, files=files)
 
-def send_message(text):
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": text})
-    except Exception as e:
-        print(f"Telegram error: {e}")
-
 def main():
-    send_message("🚀 Запускаю сбор базы...\n⏳ Займёт 3-5 минут")
-    companies = search_companies()
-    send_companies_csv(companies)
-    send_message("✅ Готово! Открой файл в Excel.")
+    send_message("🚀 Запускаю еженедельный поиск новых компаний...")
+
+    # Загружаем последний файл (любое имя)
+    last_filename, last_content = get_last_csv_file()
+    if last_filename:
+        send_message(f"📂 Сравниваю с файлом: {last_filename}")
+        previous = load_previous_emails(last_content)
+    else:
+        send_message("📂 Предыдущего файла нет — первый запуск")
+        previous = set()
+
+    # Ищем компании
+    all_companies = search_companies()
+
+    # Оставляем только новые
+    new_companies = []
+    for company in all_companies:
+        email = company["Email"].lower()
+        site = re.sub(r'https?://(www\.)?', '', company["Сайт"]).split("/")[0].lower()
+        if email not in previous and site not in previous:
+            new_companies.append(company)
+
+    print(f"Total: {len(all_companies)}, New: {len(new_companies)}")
+
+    send_companies_csv(new_companies)
+
+    send_message(
+        f"✅ Готово!\n"
+        f"🔍 Всего найдено: {len(all_companies)}\n"
+        f"🆕 Новых: {len(new_companies)}"
+    )
 
 if __name__ == "__main__":
     main()
