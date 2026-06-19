@@ -17,7 +17,7 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 
 # ============================================================
-# РАБОТА С ФАЙЛАМИ ЧЕРЕЗ GITHUB
+# GITHUB — читаем ВСЕ файлы и сохраняем новый
 # ============================================================
 
 def get_github_files():
@@ -32,72 +32,62 @@ def get_github_files():
         print(f"Error getting files: {e}")
         return []
 
-def get_last_csv_file():
-    """Находим последний CSV файл с компаниями — любое имя"""
+def load_all_known_companies():
+    """Читаем ВСЕ CSV файлы и собираем все известные email и сайты"""
+    all_known = set()
+
     try:
         files = get_github_files()
-        # Ищем все CSV файлы кроме requirements
         csv_files = [
             f for f in files
             if f["name"].endswith(".csv") and "requirements" not in f["name"]
         ]
-        if not csv_files:
-            return None, None
 
-        # Сортируем по дате последнего обновления и берём последний
-        csv_files.sort(key=lambda x: x.get("name", ""), reverse=True)
-        last_file = csv_files[0]
+        print(f"Found {len(csv_files)} CSV files in repository")
 
-        print(f"Found previous file: {last_file['name']}")
-
-        # Читаем содержимое файла
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-        response = requests.get(last_file["download_url"], headers=headers)
-        if response.status_code == 200:
-            return last_file["name"], response.content.decode("utf-8-sig", errors="ignore")
-        return None, None
 
-    except Exception as e:
-        print(f"Error reading last CSV: {e}")
-        return None, None
-
-def load_previous_emails(csv_content):
-    """Извлекаем все email и сайты из предыдущего файла"""
-    known = set()
-    if not csv_content:
-        return known
-    try:
-        # Пробуем разные разделители
-        for delimiter in [",", ";"]:
+        for file in csv_files:
             try:
-                reader = csv.DictReader(StringIO(csv_content), delimiter=delimiter)
-                rows = list(reader)
-                if not rows:
+                response = requests.get(file["download_url"], headers=headers)
+                if response.status_code != 200:
                     continue
 
-                for row in rows:
-                    # Ищем email в любой колонке
-                    for key, value in row.items():
-                        val = (value or "").strip().lower()
-                        if "@" in val and "." in val:
-                            known.add(val)
-                        # Ищем сайт
-                        if "http" in val:
-                            # Берём только домен
-                            domain = re.sub(r'https?://(www\.)?', '', val).split("/")[0]
-                            if domain:
-                                known.add(domain)
-                break
-            except:
-                continue
+                content = response.content.decode("utf-8-sig", errors="ignore")
+                print(f"Reading file: {file['name']}")
+
+                for delimiter in [",", ";"]:
+                    try:
+                        reader = csv.DictReader(StringIO(content), delimiter=delimiter)
+                        rows = list(reader)
+                        if not rows:
+                            continue
+
+                        for row in rows:
+                            for key, value in row.items():
+                                val = (value or "").strip().lower()
+                                # Собираем email
+                                if "@" in val and "." in val:
+                                    all_known.add(val)
+                                # Собираем домен сайта
+                                if "http" in val:
+                                    domain = re.sub(r'https?://(www\.)?', '', val).split("/")[0]
+                                    if domain:
+                                        all_known.add(domain)
+                        break
+                    except:
+                        continue
+
+            except Exception as e:
+                print(f"Error reading {file['name']}: {e}")
 
     except Exception as e:
-        print(f"Error parsing CSV: {e}")
-    print(f"Loaded {len(known)} known entries from previous file")
-    return known
+        print(f"Error loading companies: {e}")
+
+    print(f"Total known entries from all files: {len(all_known)}")
+    return all_known
 
 def save_csv_to_github(filename, csv_content):
-    """Сохраняем новый CSV файл в GitHub"""
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
         headers = {
@@ -113,7 +103,7 @@ def save_csv_to_github(filename, csv_content):
         if response.status_code in [200, 201]:
             print(f"Saved {filename} to GitHub")
         else:
-            print(f"Error saving: {response.status_code} {response.text}")
+            print(f"Error saving: {response.status_code}")
     except Exception as e:
         print(f"Error saving CSV: {e}")
 
@@ -366,24 +356,19 @@ def send_companies_csv(companies):
 def main():
     send_message("🚀 Запускаю еженедельный поиск новых компаний...")
 
-    # Загружаем последний файл (любое имя)
-    last_filename, last_content = get_last_csv_file()
-    if last_filename:
-        send_message(f"📂 Сравниваю с файлом: {last_filename}")
-        previous = load_previous_emails(last_content)
-    else:
-        send_message("📂 Предыдущего файла нет — первый запуск")
-        previous = set()
+    # Читаем ВСЕ предыдущие файлы
+    all_known = load_all_known_companies()
+    send_message(f"📂 Загружено из всех файлов: {len(all_known)} известных компаний")
 
-    # Ищем компании
+    # Ищем новые компании
     all_companies = search_companies()
 
-    # Оставляем только новые
+    # Оставляем только те которых нет НИ В ОДНОМ предыдущем файле
     new_companies = []
     for company in all_companies:
         email = company["Email"].lower()
         site = re.sub(r'https?://(www\.)?', '', company["Сайт"]).split("/")[0].lower()
-        if email not in previous and site not in previous:
+        if email not in all_known and site not in all_known:
             new_companies.append(company)
 
     print(f"Total: {len(all_companies)}, New: {len(new_companies)}")
@@ -393,7 +378,7 @@ def main():
     send_message(
         f"✅ Готово!\n"
         f"🔍 Всего найдено: {len(all_companies)}\n"
-        f"🆕 Новых: {len(new_companies)}"
+        f"🆕 Новых (не было ни в одном файле): {len(new_companies)}"
     )
 
 if __name__ == "__main__":
