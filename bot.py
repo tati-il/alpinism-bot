@@ -6,7 +6,7 @@ import re
 import base64
 from datetime import date
 from serpapi import GoogleSearch
-from io import StringIO
+from io import StringIO, BytesIO
 
 logging.basicConfig(level=logging.INFO)
 
@@ -16,96 +16,122 @@ SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 
+MASTER_FILE = "master_companies.xlsx"
+
 # ============================================================
-# GITHUB — читаем ВСЕ файлы и сохраняем новый
+# РАБОТА С ГЛАВНЫМ EXCEL ФАЙЛОМ НА GITHUB
 # ============================================================
 
-def get_github_files():
+def get_file_from_github(filename):
+    """Скачиваем файл с GitHub"""
     try:
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/"
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
-            return response.json()
-        return []
+            data = response.json()
+            content = base64.b64decode(data["content"])
+            sha = data["sha"]
+            return content, sha
+        return None, None
     except Exception as e:
-        print(f"Error getting files: {e}")
-        return []
+        print(f"Error getting file: {e}")
+        return None, None
 
-def load_all_known_companies():
-    """Читаем ВСЕ CSV файлы и собираем все известные email и сайты"""
-    all_known = set()
-
+def load_known_emails_from_master():
+    """Читаем все email и сайты из главного файла"""
+    known = set()
     try:
-        files = get_github_files()
-        csv_files = [
-            f for f in files
-            if f["name"].endswith(".csv") and "requirements" not in f["name"]
-        ]
+        import pandas as pd
+        content, sha = get_file_from_github(MASTER_FILE)
+        if not content:
+            print("Master file not found")
+            return known, None
 
-        print(f"Found {len(csv_files)} CSV files in repository")
+        df = pd.read_excel(BytesIO(content))
 
-        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        for _, row in df.iterrows():
+            for col in df.columns:
+                val = str(row[col]).strip().lower()
+                if "@" in val and "." in val:
+                    known.add(val)
+                if "http" in val:
+                    domain = re.sub(r'https?://(www\.)?', '', val).split("/")[0]
+                    if domain and domain != "nan":
+                        known.add(domain)
 
-        for file in csv_files:
-            try:
-                response = requests.get(file["download_url"], headers=headers)
-                if response.status_code != 200:
-                    continue
-
-                content = response.content.decode("utf-8-sig", errors="ignore")
-                print(f"Reading file: {file['name']}")
-
-                for delimiter in [",", ";"]:
-                    try:
-                        reader = csv.DictReader(StringIO(content), delimiter=delimiter)
-                        rows = list(reader)
-                        if not rows:
-                            continue
-
-                        for row in rows:
-                            for key, value in row.items():
-                                val = (value or "").strip().lower()
-                                # Собираем email
-                                if "@" in val and "." in val:
-                                    all_known.add(val)
-                                # Собираем домен сайта
-                                if "http" in val:
-                                    domain = re.sub(r'https?://(www\.)?', '', val).split("/")[0]
-                                    if domain:
-                                        all_known.add(domain)
-                        break
-                    except:
-                        continue
-
-            except Exception as e:
-                print(f"Error reading {file['name']}: {e}")
+        print(f"Loaded {len(known)} known entries from master file")
+        return known, sha
 
     except Exception as e:
-        print(f"Error loading companies: {e}")
+        print(f"Error loading master: {e}")
+        return known, None
 
-    print(f"Total known entries from all files: {len(all_known)}")
-    return all_known
-
-def save_csv_to_github(filename, csv_content):
+def append_to_master(new_companies):
+    """Добавляем новые компании в главный файл"""
     try:
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
+        import pandas as pd
+        from openpyxl import load_workbook
+
+        content, sha = get_file_from_github(MASTER_FILE)
+
+        if content:
+            # Читаем существующий файл
+            df_existing = pd.read_excel(BytesIO(content))
+        else:
+            # Создаём новый если нет
+            df_existing = pd.DataFrame(columns=[
+                "שם", "עיר", "מייל", "אתר", "טלפון", "שליחת מייל", "קבלת מענה", "האם נסגרה עסקהחוזה"
+            ])
+
+        # Создаём DataFrame из новых компаний
+        new_rows = []
+        for c in new_companies:
+            new_rows.append({
+                "שם": c["Название"],
+                "עיר": c["Город"],
+                "מייל": c["Email"],
+                "אתר": c["Сайт"],
+                "טלפון": c["Телефон"],
+                "שליחת מייל": "",
+                "קבלת מענה": "",
+                "האם נסגרה עסקהחוזה": "",
+            })
+
+        df_new = pd.DataFrame(new_rows)
+        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+
+        # Сохраняем в байты
+        output = BytesIO()
+        df_combined.to_excel(output, index=False)
+        output.seek(0)
+        file_content = output.read()
+
+        # Загружаем на GitHub
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{MASTER_FILE}"
         headers = {
             "Authorization": f"token {GITHUB_TOKEN}",
             "Content-Type": "application/json",
         }
-        content = base64.b64encode(csv_content.encode("utf-8-sig")).decode("utf-8")
+        encoded = base64.b64encode(file_content).decode("utf-8")
         payload = {
-            "message": f"Add companies {date.today()}",
-            "content": content,
+            "message": f"Add {len(new_companies)} new companies {date.today()}",
+            "content": encoded,
         }
+        if sha:
+            payload["sha"] = sha
+
         response = requests.put(url, headers=headers, json=payload)
         if response.status_code in [200, 201]:
-            print(f"Saved {filename} to GitHub")
+            print(f"Master file updated with {len(new_companies)} new companies")
+            return True
         else:
-            print(f"Error saving: {response.status_code}")
+            print(f"Error updating master: {response.status_code}")
+            return False
+
     except Exception as e:
-        print(f"Error saving CSV: {e}")
+        print(f"Error appending to master: {e}")
+        return False
 
 # ============================================================
 # КЛЮЧЕВЫЕ СЛОВА — только иврит
@@ -160,7 +186,7 @@ ARTICLE_URL_SIGNS = [
     "/blog/", "/news/", "/article/", "/post/",
     "/category/", "/tag/", "?p=", "wiki",
     "/jobs/", "/career/", "/משרות/", "/דרושים/",
-    "/קורס/", "/course/", "/courses/",
+    "/קורס/", "/course/",
 ]
 
 VALID_EMAIL_DOMAINS = [
@@ -330,21 +356,19 @@ def send_companies_csv(companies):
 
     output = StringIO()
     writer = csv.DictWriter(output, fieldnames=[
-        "Название", "Телефон", "Email", "Сайт", "Город", "Источник", "Дата"
+        "Название", "Телефон", "Email", "Сайт", "Город", "Дата"
     ])
     writer.writeheader()
     writer.writerows(companies)
     csv_content = output.getvalue()
 
-    filename = f"companies_{date.today()}.csv"
-    save_csv_to_github(filename, csv_content)
-
+    filename = f"new_companies_{date.today()}.csv"
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     files = {"document": (filename, csv_content.encode("utf-8-sig"), "text/csv")}
     data = {
         "chat_id": CHAT_ID,
         "caption": (
-            f"🆕 НОВЫЕ компании за эту неделю\n"
+            f"🆕 НОВЫЕ компании\n"
             f"📊 Найдено новых: {len(companies)}\n"
             f"📞 С телефоном: {sum(1 for c in companies if c['Телефон'])}\n"
             f"📧 С email: {sum(1 for c in companies if c['Email'])}\n"
@@ -354,31 +378,38 @@ def send_companies_csv(companies):
     requests.post(url, data=data, files=files)
 
 def main():
-    send_message("🚀 Запускаю еженедельный поиск новых компаний...")
+    send_message("🚀 Запускаю еженедельный поиск...")
 
-    # Читаем ВСЕ предыдущие файлы
-    all_known = load_all_known_companies()
-    send_message(f"📂 Загружено из всех файлов: {len(all_known)} известных компаний")
+    # Загружаем все известные компании из главного файла
+    known, sha = load_known_emails_from_master()
+    send_message(f"📂 В главном файле: {len(known)} известных записей")
 
     # Ищем новые компании
     all_companies = search_companies()
 
-    # Оставляем только те которых нет НИ В ОДНОМ предыдущем файле
+    # Оставляем только новые
     new_companies = []
     for company in all_companies:
         email = company["Email"].lower()
         site = re.sub(r'https?://(www\.)?', '', company["Сайт"]).split("/")[0].lower()
-        if email not in all_known and site not in all_known:
+        if email not in known and site not in known:
             new_companies.append(company)
 
     print(f"Total: {len(all_companies)}, New: {len(new_companies)}")
 
-    send_companies_csv(new_companies)
+    if new_companies:
+        # Добавляем новые компании в главный файл
+        append_to_master(new_companies)
+        # Отправляем список новых
+        send_companies_csv(new_companies)
+    else:
+        send_message("🏢 Новых компаний не найдено.")
 
     send_message(
         f"✅ Готово!\n"
         f"🔍 Всего найдено: {len(all_companies)}\n"
-        f"🆕 Новых (не было ни в одном файле): {len(new_companies)}"
+        f"🆕 Новых: {len(new_companies)}\n"
+        f"📊 Добавлено в главный файл"
     )
 
 if __name__ == "__main__":
