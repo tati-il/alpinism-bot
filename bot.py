@@ -18,12 +18,7 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO")
 
 MASTER_FILE = "master_companies.xlsx"
 
-# ============================================================
-# РАБОТА С ГЛАВНЫМ EXCEL ФАЙЛОМ НА GITHUB
-# ============================================================
-
 def get_file_from_github(filename):
-    """Скачиваем файл с GitHub"""
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
@@ -39,7 +34,6 @@ def get_file_from_github(filename):
         return None, None
 
 def load_known_emails_from_master():
-    """Читаем все email и сайты из главного файла"""
     known = set()
     try:
         import pandas as pd
@@ -47,44 +41,33 @@ def load_known_emails_from_master():
         if not content:
             print("Master file not found")
             return known, None
-
         df = pd.read_excel(BytesIO(content))
-
         for _, row in df.iterrows():
             for col in df.columns:
                 val = str(row[col]).strip().lower()
-                if "@" in val and "." in val:
+                if "@" in val and "." in val and val != "nan":
                     known.add(val)
                 if "http" in val:
                     domain = re.sub(r'https?://(www\.)?', '', val).split("/")[0]
                     if domain and domain != "nan":
                         known.add(domain)
-
         print(f"Loaded {len(known)} known entries from master file")
         return known, sha
-
     except Exception as e:
         print(f"Error loading master: {e}")
         return known, None
 
 def append_to_master(new_companies):
-    """Добавляем новые компании в главный файл"""
     try:
         import pandas as pd
-        from openpyxl import load_workbook
-
         content, sha = get_file_from_github(MASTER_FILE)
-
         if content:
-            # Читаем существующий файл
             df_existing = pd.read_excel(BytesIO(content))
         else:
-            # Создаём новый если нет
             df_existing = pd.DataFrame(columns=[
                 "שם", "עיר", "מייל", "אתר", "טלפון", "שליחת מייל", "קבלת מענה", "האם נסגרה עסקהחוזה"
             ])
 
-        # Создаём DataFrame из новых компаний
         new_rows = []
         for c in new_companies:
             new_rows.append({
@@ -101,13 +84,11 @@ def append_to_master(new_companies):
         df_new = pd.DataFrame(new_rows)
         df_combined = pd.concat([df_existing, df_new], ignore_index=True)
 
-        # Сохраняем в байты
         output = BytesIO()
         df_combined.to_excel(output, index=False)
         output.seek(0)
         file_content = output.read()
 
-        # Загружаем на GitHub
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{MASTER_FILE}"
         headers = {
             "Authorization": f"token {GITHUB_TOKEN}",
@@ -128,14 +109,9 @@ def append_to_master(new_companies):
         else:
             print(f"Error updating master: {response.status_code}")
             return False
-
     except Exception as e:
         print(f"Error appending to master: {e}")
         return False
-
-# ============================================================
-# КЛЮЧЕВЫЕ СЛОВА — только иврит
-# ============================================================
 
 COMPANY_KEYWORDS = [
     "חברת ניהול בניינים",
@@ -284,7 +260,6 @@ def scrape_contact_page(base_url):
 def search_companies():
     companies = []
     seen_links = set()
-
     for keyword in COMPANY_KEYWORDS:
         try:
             params = {
@@ -297,49 +272,38 @@ def search_companies():
             }
             search = GoogleSearch(params)
             data = search.get_dict()
-
             for r in data.get("organic_results", []):
                 title = r.get("title", "")
                 link = r.get("link", "")
                 snippet = r.get("snippet", "")
-
                 if link in seen_links:
                     continue
                 seen_links.add(link)
-
                 if not is_real_company(title, link):
                     continue
-
                 phone = extract_phone(snippet + " " + title)
                 email = extract_email(snippet + " " + title)
                 city = extract_city(snippet + " " + title + " " + keyword)
-
                 if not phone or not email:
                     scraped_phone, scraped_email = scrape_contact_page(link)
                     if not phone:
                         phone = scraped_phone
                     if not email:
                         email = scraped_email
-
                 if not email:
                     continue
-
                 if not city:
                     city = extract_city(title)
-
                 companies.append({
                     "Название": title,
                     "Телефон": phone,
                     "Email": email,
                     "Сайт": link,
                     "Город": city,
-                    "Источник": keyword,
                     "Дата": str(date.today()),
                 })
-
         except Exception as e:
             print(f"Error '{keyword}': {e}")
-
     return companies
 
 def send_message(text):
@@ -351,13 +315,12 @@ def send_message(text):
 
 def send_companies_csv(companies):
     if not companies:
-        send_message("🏢 Новых компаний на этой неделе не найдено.")
+        send_message("🏢 Новых компаний не найдено.")
         return
 
+    fieldnames = ["Название", "Телефон", "Email", "Сайт", "Город", "Дата"]
     output = StringIO()
-    writer = csv.DictWriter(output, fieldnames=[
-        "Название", "Телефон", "Email", "Сайт", "Город", "Дата"
-    ])
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
     writer.writeheader()
     writer.writerows(companies)
     csv_content = output.getvalue()
@@ -380,14 +343,11 @@ def send_companies_csv(companies):
 def main():
     send_message("🚀 Запускаю еженедельный поиск...")
 
-    # Загружаем все известные компании из главного файла
     known, sha = load_known_emails_from_master()
     send_message(f"📂 В главном файле: {len(known)} известных записей")
 
-    # Ищем новые компании
     all_companies = search_companies()
 
-    # Оставляем только новые
     new_companies = []
     for company in all_companies:
         email = company["Email"].lower()
@@ -398,9 +358,7 @@ def main():
     print(f"Total: {len(all_companies)}, New: {len(new_companies)}")
 
     if new_companies:
-        # Добавляем новые компании в главный файл
         append_to_master(new_companies)
-        # Отправляем список новых
         send_companies_csv(new_companies)
     else:
         send_message("🏢 Новых компаний не найдено.")
